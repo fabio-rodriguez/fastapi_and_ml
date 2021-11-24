@@ -40,4 +40,3 @@ def test_predictions():
     
     assert response_auth.status_code == 200
     
-
