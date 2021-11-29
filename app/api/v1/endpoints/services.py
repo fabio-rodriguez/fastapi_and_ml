@@ -1,12 +1,11 @@
 import json
 import numpy as np
-import uuid
 
+from fastapi import APIRouter, BackgroundTasks
 
-from fastapi import APIRouter
-
-from .constants import ADMIN_KEY, ENCRYPTION_TYPE, ML_MODEL, USERS
+from .constants import *
 from .jobs import *
+
 
 router = APIRouter()
 
@@ -26,17 +25,20 @@ async def testing_post(Xi: list):
 
 
 @router.post("/eval")
-async def eval_model(data: dict):
+async def eval_model(data: dict, background_tasks: BackgroundTasks):
     
     try:
-        url = data["url"]
-        token = data["user_id"]
+        url = data["data_url"]
+        user_token = data["user_id"]
     except:
-        return json.dumps({"status": "ERROR", "info": "Keys 'url' and 'user_id' muts be specified"})
+        return json.dumps({"status": "ERROR", "info": "Keys 'data_url' and 'user_id' muts be specified"})
 
     #TODO
-    if not is_valid_token(token):
+    if not user_token in USERS:
         return json.dumps({"status": "ERROR", "info": "Not valid user id"})
+
+    if USERS[user_token] == 0:
+        return json.dumps({"status": "ERROR", "info": "Not enough points"})
 
     Xi = None
     if url.endswith(".jpg"):
@@ -51,8 +53,16 @@ async def eval_model(data: dict):
     if data == None:
         return json.dumps({"status": "ERROR", "info": "Bad url"})
 
-    token = queue_prediction(Xi)
-    return json.dumps({"status": "SUCCESS", "info": "Prediction in process", "id_token": token})
+    # Register Job in Users joblist and decrease points in 1
+    job_id, st = queue_job(user_token, Xi, JOBS_QUEUE, USER_JOBS[user_token])
+    status = RUNNING_STATUS if st else WAITING_STATUS
+    USER_JOBS[user_token][job_id] = status
+    USERS[user_token] -= 1 
+    if status == RUNNING_STATUS:
+        # Execute background task
+        background_tasks.add_task(run_ml_model)
+
+    return json.dumps({"status": "SUCCESS", "info": "Prediction in process", "id_token": job_id})
 
 
 @router.post("/generate_token")
@@ -68,9 +78,11 @@ async def adding_users(data: dict):
 
     if decrypted_message == ADMIN_KEY:
         
+        ## The user token is stored, then is encrypted and returned  
         new_token = create_token(USERS)
         encrypted_token = ENCRYPTION_TYPE.encrypt(new_token.bytes) 
         USERS[new_token.bytes] = 0  
+        USER_JOBS[new_token.bytes] = {}
         return json.dumps({"status": "SUCCESS", "info": "User correctly added", "encrypted_token": encrypted_token})
 
     else:
@@ -99,3 +111,39 @@ async def adding_user_points(data: dict):
 
     else:
         return json.dumps({"status": "ERROR", "info": "Wrong Admin Key"})
+
+
+def run_ml_model():
+    
+    while not JOBS_QUEUE.empty(): 
+        job_id, user_token, Xi = queue.get()
+        result = ML_MODEL.predict(Xi)
+        if user_token in JOBS_RESPONSE: 
+            JOBS_RESPONSE[user_token][job_id] = result
+        else:
+            JOBS_RESPONSE[user_token] = {job_id: result}
+
+        USER_JOBS[user_token][job_id] = DONE_STATUS
+        
+
+@router.post("/get_results")
+async def get_results(data: dict):
+    '''
+        data = {'user_token': ..., job_id: ...}
+    '''
+
+    user_token = data['user_token']
+    job_id = data['job_id']
+
+    if not user_token in USERS:
+        return json.dumps({"status": "ERROR", "info": "User doesn't exist"})
+    
+    if not job_id in USER_JOBS[user_token]:
+        return json.dumps({"status": "ERROR", "info": f"Job doesn't exist for user_token {user_token}"})
+
+    if USER_JOBS[user_token][job_id] != DONE_STATUS:
+        return json.dumps({"status": "SUCCESS", "info": f"The job is in {USER_JOBS[user_token][job_id]} status. Please wait."})
+    
+    return json.dumps({"status": "SUCCESS", "info": f"Job Complete. Thank you!", "result": JOBS_RESPONSE[user_token][job_id]})
+
+

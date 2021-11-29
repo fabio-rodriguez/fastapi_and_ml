@@ -1,4 +1,5 @@
 import pickle
+import queue
 import time
 import uuid
 
@@ -41,3 +42,13 @@ def restart_model():
 
 
 USERS = {}
+
+JOBS_QUEUE = queue.Queue()
+
+USER_JOBS = {}
+
+JOBS_RESPONSE = {}
+
+RUNNING_STATUS = "RUNNING"
+DONE_STATUS = "DONE"
+WAITING_STATUS = "WAITING"
